@@ -1,0 +1,4 @@
+python==3.10.20
+openai-whisper
+whisper模型为small
+opencc-python-reimplemented
