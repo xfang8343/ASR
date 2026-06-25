@@ -7,8 +7,8 @@
 ## 📁 项目结构
 
 ```
-ASR
-├── asr_mp3.py          # 音频文件识别脚本（支持翻译导出）
+ASR/
+├── asr_mp3.py          # 音频文件识别脚本（支持转录与翻译）
 ├── asr_micro.py        # 实时麦克风识别脚本（含语音活动检测）
 ├── result/             # 识别结果输出目录
 └── test_audio/
@@ -20,12 +20,20 @@ ASR
 
 ## ✨ 功能简介
 
-### `asr_mp3.py` — 音频文件识别
+### `asr_mp3.py` — 音频文件识别与翻译
 
+运行后交互选择功能：
+
+**1. 语音转录**
 - 支持 `.mp3` 等常见音频格式
-- 自动识别语言，或手动指定中文 / 英文
-- 识别结果自动导出至 `./result` 目录
-- 支持语音翻译功能
+- 自动检测语言，或手动指定中文 / 英文
+- 中文输出自动转为简体（opencc）
+- 结果保存至 `./result/<filename>_transcript.txt`
+
+**2. 语音翻译**
+- 中译英：Whisper 原生 `translate` 任务，输出中文原文 + 英文译文对照
+- 英译中：Whisper 转录英文原文 + Helsinki-NLP 本地模型翻译为中文
+- 结果分别保存至 `./result/<filename>_translation_zh2en.txt` / `_translation_en2zh.txt`
 
 ### `asr_micro.py` — 实时麦克风识别
 
@@ -41,10 +49,12 @@ ASR
 |------|--------|------|
 | `MODEL_SIZE` | `tiny` / `small` / `medium` / `large` | 模型大小，推荐 `small`；`tiny` 精度较低 |
 | `LANGUAGE` | `zh` / `en` / `None` | 指定语言；`None` 为自动检测 |
+| `EN2ZH_MODEL` | 本地路径 或 HuggingFace 模型名 | 英译中翻译模型路径 |
 
 ```python
-MODEL_SIZE = "small"   # 可换 tiny / medium / large
-LANGUAGE   = None      # zh=中文，en=英文，None=自动检测
+MODEL_SIZE  = "small"                        # 可换 tiny / medium / large
+LANGUAGE    = None                           # zh=中文，en=英文，None=自动检测
+EN2ZH_MODEL = "./models/opus-mt-en-zh"      # 英译中本地模型路径
 ```
 
 ---
@@ -54,7 +64,9 @@ LANGUAGE   = None      # zh=中文，en=英文，None=自动检测
 ### 环境依赖
 
 ```bash
-pip install openai-whisper
+pip install openai-whisper opencc-python-reimplemented
+pip install transformers sentencepiece   # 英译中功能需要
+
 # 如使用麦克风功能，还需安装：
 pip install sounddevice numpy
 ```
@@ -64,13 +76,19 @@ pip install sounddevice numpy
 > sudo apt install ffmpeg   # Ubuntu / Debian
 > ```
 
-### 运行音频文件识别
+### 英译中模型下载（首次使用）
+
+`Helsinki-NLP/opus-mt-en-zh` 模型需提前下载至本地，之后完全离线运行：
+
+> 网络受限时可设置镜像：`export HF_ENDPOINT=https://hf-mirror.com`
+
+### 运行音频文件识别 / 翻译
 
 ```bash
 python asr_mp3.py ./test_audio/ZH.mp3
 ```
 
-识别完成后，结果将保存至 `./result` 目录。
+运行后按提示选择功能（转录 / 翻译）及翻译方向，结果自动保存至 `./result/`。
 
 ### 运行实时麦克风识别
 
@@ -80,14 +98,20 @@ python asr_micro.py
 
 ---
 
-## 📝 输出示例
+## 📝 输出文件命名
 
-识别结果以文本文件形式保存在 `./result/` 目录下，文件名与输入音频对应。
+| 功能 | 输出文件名示例 |
+|------|--------------|
+| 语音转录 | `ZH_transcript.txt` |
+| 中译英 | `ZH_translation_zh2en.txt` |
+| 英译中 | `EN_translation_en2zh.txt` |
+
+所有文件保存在 `./result/` 目录下，内容包含音频路径、原文及译文对照。
 
 ---
 
 ## 📌 备注
 
-- 模型首次运行时会自动下载，建议网络通畅或提前手动下载模型权重
+- Whisper 模型首次运行时自动下载，建议网络通畅或提前手动下载
 - `small` 模型在速度与精度之间取得较好平衡，推荐日常使用
-- 中文识别默认输出简体中文；如需繁体中文，可在代码中指定 `language="zh"` 并调整相关参数
+- 中文转录输出默认为简体中文（opencc 自动转换）

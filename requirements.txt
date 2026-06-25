@@ -1,4 +1,13 @@
-python==3.10.20
+# Python 版本
+# python==3.10.20
+
+# 语音识别（Whisper small 模型）
 openai-whisper
-whisper模型为small
+
+# 繁简转换
 opencc-python-reimplemented
+
+# 英译中翻译模型（Helsinki-NLP/opus-mt-en-zh）
+transformers
+sentencepiece
+sacremoses
