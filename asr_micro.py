@@ -4,16 +4,15 @@ asr_micro.py — 实时麦克风语音识别主入口
 设计说明：
   本文件只负责：
     1. 用户交互（功能菜单选择）
-    2. 加载所需模型
+    2. 独立运行时自行加载所需模型
     3. 循环调度 recorder → transcriber / translator → saver
 
-  不包含任何录音、识别、翻译、保存的具体实现，
-  全部委托给 mic/ 包内的各功能模块。
-
-  这样设计的好处：
-    - 主入口保持简洁，逻辑一目了然
-    - 各模块可独立测试，互不耦合
-    - 未来 asr_core.py 统一调度时，直接 import 并调用 run() 即可
+  与 asr_core.py 的关系：
+    - 独立运行：python asr_micro.py
+      → main() 自行加载模型，调用 run()
+    - 通过 asr_core.py 调用：
+      → asr_core.py 统一加载模型后，直接调用 run(whisper_model, vad_model)
+      → 模型只加载一次，无需重复等待
 
 用法：
   python asr_micro.py
@@ -25,10 +24,7 @@ from mic import recorder, transcriber, saver
 
 
 def select_function() -> str:
-    """
-    主功能菜单。
-    同时显示中英文，照顾只懂单一语言的用户。
-    """
+    """主功能菜单，同时显示中英文。"""
     print("=" * 50)
     print("请选择功能 / Please select a function:")
     print("  1. 实时语音转录   Live Transcription")
@@ -82,21 +78,35 @@ def run_transcription(vad_model, whisper_model):
         print(f"\n[INFO] 转录结果已保存至：{save_path}")
 
 
-def main():
-    # 1. 功能选择
+def run(whisper_model, vad_model):
+    """
+    麦克风识别核心流程。
+
+    参数：
+      whisper_model — 已加载的 Whisper 模型实例
+      vad_model     — 已加载的 Silero-VAD 模型实例
+
+    设计说明：
+      将核心逻辑抽为独立函数，使 asr_core.py 可以直接调用，
+      同时 main() 独立运行时也调用此函数，避免代码重复。
+    """
     func = select_function()
 
-    # 2. 加载模型（统一在主入口加载，避免各模块重复加载）
-    vad_model     = recorder.load_vad_model()
-    whisper_model = transcriber.load_whisper_model()
-
-    # 3. 执行对应功能
     if func == "transcribe":
         run_transcription(vad_model, whisper_model)
 
     # 翻译功能实现后在此添加：
     # elif func == "translate":
     #     run_translation(vad_model, whisper_model)
+
+
+def main():
+    # 1. 独立运行时自行加载模型
+    vad_model     = recorder.load_vad_model()
+    whisper_model = transcriber.load_whisper_model()
+
+    # 2. 执行核心流程
+    run(whisper_model, vad_model)
 
 
 if __name__ == "__main__":
