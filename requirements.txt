@@ -11,4 +11,11 @@ opencc-python-reimplemented
 transformers
 sentencepiece
 sacremoses
-pip install sounddevice torch torchaudio
+
+# 麦克风录音 + 重采样
+sounddevice
+scipy
+
+# Silero-VAD 语音活动检测
+torch
+torchaudio
