@@ -11,3 +11,4 @@ opencc-python-reimplemented
 transformers
 sentencepiece
 sacremoses
+pip install sounddevice torch torchaudio
