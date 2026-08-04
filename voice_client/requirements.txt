@@ -1,0 +1,6 @@
+# 仅用于本地 Ubuntu 客户端：录音、按键监听、HTTP 上传和语音播放
+numpy>=1.26,<3
+pynput>=1.7,<2
+requests>=2.31,<3
+sounddevice>=0.4.6,<1
+soundfile>=0.12,<1

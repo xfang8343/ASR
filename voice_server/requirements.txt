@@ -1,0 +1,10 @@
+# 仅用于 10.10.10.92 工作站服务端。
+fastapi>=0.110,<1
+faster-whisper>=1.1,<2
+python-multipart>=0.0.9,<1
+requests>=2.31,<3
+uvicorn[standard]>=0.27,<1
+
+# Piper 命令行程序（提供 piper 可执行文件）。模型 .onnx 文件需另行下载并通过
+# PIPER_ZH_MODEL、PIPER_EN_MODEL 或 server 命令行参数指定。
+piper-tts>=1.2,<2

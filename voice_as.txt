@@ -1,0 +1,745 @@
+# 进一步扩展，
+# 人机对话:像gpt的语音对话聊天一样，但是估计我的电脑配置不够，但是我这边有5090的工作站服务器
+# 输入信息：人-麦克风输入基本日常信息（中英两种语言），本地麦克风输入的音频
+# 上传到云端工作站服务器处理
+# 输出信息：处理后的机器方的语音音频
+
+
+## 最终需求确认
+
+```text
+本地 Ubuntu 电脑
+按住 V → 麦克风录音
+松开 V → 上传音频到 10.10.10.92
+                         ↓
+双 RTX 5090 工作站
+语音识别 → 大模型回答 → 语音合成
+                         ↓
+返回音频和文字
+                         ↓
+本地电脑播放语音，并在终端显示文本
+```
+
+---
+
+# 一、技术方案
+
+## 1. 本地客户端
+
+本地电脑只负责：
+
+1. 监听键盘 `V`
+2. 录制麦克风音频
+3. 将音频发送到服务器
+4. 接收服务器返回的文字和语音
+5. 播放语音
+6. 在终端显示状态
+
+建议使用：
+
+| 功能      | Python 库             |
+| ------- | -------------------- |
+| 键盘监听    | `pynput`             |
+| 麦克风录音   | `sounddevice`        |
+| WAV 处理  | `soundfile`          |
+| HTTP 请求 | `requests`           |
+| 音频播放    | `sounddevice` 或系统播放器 |
+
+本地电脑不运行语音识别和大模型，因此对本地显卡和算力要求很低。
+
+---
+
+## 2. 服务器接口
+
+服务器端建议使用：
+
+* `FastAPI`
+* `Uvicorn`
+* HTTP 文件上传
+* 返回 JSON 和 WAV 音频
+
+建议接口：
+
+```text
+POST http://10.10.10.92:8000/chat
+```
+
+上传内容：
+
+```text
+audio.wav
+session_id
+```
+
+返回内容可以设计为：
+
+```json
+{
+  "user_text": "你好，今天天气怎么样？",
+  "assistant_text": "你好，我无法直接获取实时天气……",
+  "language": "zh",
+  "audio_url": "/audio/xxxx.wav",
+  "timing": {
+    "asr": 0.4,
+    "llm": 1.2,
+    "tts": 0.3,
+    "total": 1.9
+  }
+}
+```
+
+客户端收到后，再请求：
+
+```text
+GET http://10.10.10.92:8000/audio/xxxx.wav
+```
+
+然后播放。
+
+也可以让接口直接返回压缩包或二进制音频，但第一版采用“JSON + 音频下载地址”更容易理解和排错。
+
+---
+
+# 二、三个核心模型如何选择
+
+## 1. 语音识别：faster-whisper
+
+推荐：
+
+```text
+faster-whisper + large-v3
+```
+
+`faster-whisper` 当前 GPU 环境需要 CUDA 12 系列的 cuBLAS 和 cuDNN 9。你的 `nvidia-smi` 显示的是驱动可支持 CUDA 13.2，并不代表系统只能安装 CUDA 13.2；可以在 Conda 环境中安装所需的 CUDA 12 运行库。([GitHub][1])
+
+### 推荐配置
+
+
+```python
+WhisperModel(
+    "large-v3",
+    device="cuda",
+    compute_type="float16"
+)
+```
+---
+
+## 2. 大语言模型：Ollama + Qwen3
+
+推荐：
+
+```text
+Ollama + Qwen3
+```
+
+```text
+qwen3:8b
+```
+
+只使用 GPU 1：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 ollama serve
+```
+
+原因是 GPU 0 正在运行桌面环境，GPU 1 基本空闲。
+
+### 模型启动
+
+```bash
+ollama run qwen3:8b
+```
+
+Python 服务调用
+
+
+### 对话历史
+
+服务器端保存如下列表即可：
+
+```python
+messages = [
+    {
+        "role": "system",
+        "content": "You are a concise bilingual voice assistant."
+    },
+    {
+        "role": "user",
+        "content": "你好"
+    },
+    {
+        "role": "assistant",
+        "content": "你好，有什么可以帮助你的？"
+    }
+]
+```
+
+每完成一轮，就将用户文本和机器回答追加进去。
+
+程序关闭后列表消失，正好符合你当前“只保存本次运行历史”的要求。
+
+---
+
+## 3. 语音合成：Piper
+
+```text
+Piper TTS
+```
+
+中文和英文使用两套音色：
+
+```text
+中文：zh_CN-huayan-medium
+英文：en_US-lessac-medium
+```
+
+Piper 是本地神经语音合成系统，支持中文和英文，并提供 ONNX 音色模型。其中文音色列表包括 `huayan`，还存在 `xiao_ya` 等中文模型。([GitHub][4])
+
+
+---
+
+# 三、最终推荐组合
+
+```text
+客户端：
+Python 3.11
+pynput
+sounddevice
+soundfile
+requests
+
+服务器：
+Python 3.11
+FastAPI
+Uvicorn
+faster-whisper
+Ollama
+Qwen3:8b
+Piper TTS
+```
+
+完整链路：
+
+```text
+麦克风
+  ↓
+16 kHz / 单声道 / WAV
+  ↓
+FastAPI 上传
+  ↓
+faster-whisper large-v3
+  ↓
+用户文字 + 自动语言识别
+  ↓
+Ollama / Qwen3:8b
+  ↓
+机器回答文字
+  ↓
+根据回答语言选择 Piper 音色
+  ↓
+生成 WAV
+  ↓
+返回本地电脑
+  ↓
+播放
+```
+
+---
+
+# 四、工作站的显卡分配
+
+虽然服务器有两张 RTX 5090，但第一版不需要同时使用两张。
+
+建议：
+
+| GPU   | 用途                         |
+| ----- | -------------------------- |
+| GPU 0 | 桌面系统，暂不使用或备用               |
+| GPU 1 | Ollama 大模型和 faster-whisper |
+| CPU   | Piper TTS、FastAPI、文件处理     |
+
+第一版所有模型甚至可以只运行在一张 5090 上。
+
+双显卡在以下情况才有明显意义：
+
+* 部署 70B 以上模型
+* 多人同时使用
+* ASR 和 LLM 分别占用独立显卡
+* 多个模型长期驻留
+* 高并发语音请求
+
+后续可以配置：
+
+```text
+GPU 0：faster-whisper
+GPU 1：Qwen
+CPU：Piper
+```
+
+但现在不必增加复杂度。
+
+---
+
+# 五、建议的目录结构
+
+## 服务器端
+
+```text
+~/voice_assistant/
+├── server/
+│   ├── app.py
+│   ├── config.py
+│   ├── asr_service.py
+│   ├── llm_service.py
+│   ├── tts_service.py
+│   ├── session_manager.py
+│   └── requirements.txt
+├── models/
+│   └── piper/
+│       ├── zh_CN-huayan-medium.onnx
+│       ├── zh_CN-huayan-medium.onnx.json
+│       ├── en_US-lessac-medium.onnx
+│       └── en_US-lessac-medium.onnx.json
+├── temp/
+│   ├── input/
+│   └── output/
+└── scripts/
+    ├── start_server.sh
+    └── test_server.py
+```
+
+## 本地客户端
+
+```text
+~/voice_client/
+├── client.py
+├── recorder.py
+├── player.py
+├── config.py
+└── requirements.txt
+```
+
+---
+
+# 六、按住 V 的交互逻辑
+
+建议实现状态机：
+
+```text
+IDLE
+  │
+  │ 按下 V
+  ↓
+RECORDING
+  │
+  │ 持续采集麦克风
+  │
+  │ 松开 V
+  ↓
+UPLOADING
+  ↓
+PROCESSING
+  ↓
+PLAYING
+  ↓
+IDLE
+```
+
+终端显示示例：
+
+```text
+Voice Assistant Client
+Server: http://10.10.10.92:8000
+
+按住 V 开始说话，松开 V 发送
+按 ESC 退出
+
+[录音中...]
+[录音结束] 2.8 秒
+[上传中...]
+[识别语言] 中文
+[你] 今天过得怎么样？
+[助手] 我没有真实的一天，但我可以陪你聊聊。你今天怎么样？
+
+[耗时]
+ASR: 0.38 s
+LLM: 0.91 s
+TTS: 0.27 s
+Total: 1.68 s
+
+[正在播放...]
+```
+
+为了避免误触，需要加入两个限制：
+
+```text
+最短录音时间：0.3 秒
+最长录音时间：30 秒
+```
+
+小于 0.3 秒则不发送。
+
+---
+
+# 七、中英文自动处理逻辑
+
+## ASR 阶段
+
+Whisper 返回：
+
+```python
+language = info.language
+```
+
+可能为：
+
+```text
+zh
+en
+```
+
+## LLM 阶段
+
+在系统提示词中明确规定：
+
+```text
+Respond in the same primary language as the user.
+If the user mixes Chinese and English, respond naturally using both when appropriate.
+Keep spoken responses concise and conversational.
+Avoid markdown tables and overly long enumerations because the response will be read aloud.
+```
+
+这样用户说中文，模型通常用中文回答；用户说英文，模型用英文回答。
+
+## TTS 阶段
+
+根据回答文本判断主要语言：
+
+```python
+if chinese_character_ratio > 0.2:
+    voice = "zh_CN-huayan-medium"
+else:
+    voice = "en_US-lessac-medium"
+```
+
+第一版不需要复杂语言识别库。
+
+---
+
+# 八、推荐的开发顺序
+
+不要一次把所有模块写完。建议按照下面顺序逐步验证。
+
+## 阶段 1：测试本地录音
+
+只在本地电脑实现：
+
+```text
+按住 V
+松开 V
+保存 test.wav
+播放 test.wav
+```
+
+验收条件：
+
+* V 键可正确控制录音
+* 麦克风声音清楚
+* WAV 能正常播放
+* ESC 能退出
+
+---
+
+## 阶段 2：测试服务器文件上传
+
+服务器暂时不运行任何模型，只实现：
+
+```text
+客户端上传 WAV
+服务器保存 WAV
+服务器返回成功信息
+```
+
+验收条件：
+
+```bash
+curl http://10.10.10.92:8000/health
+```
+
+返回：
+
+```json
+{"status":"ok"}
+```
+
+并且客户端录音可成功保存在服务器。
+
+---
+
+## 阶段 3：接入语音识别
+
+服务器加入 faster-whisper：
+
+```text
+客户端录音
+→ 上传服务器
+→ 返回识别文本
+```
+
+先不接 LLM 和 TTS。
+
+验收条件：
+
+* 中文识别正确
+* 英文识别正确
+* 能显示语言
+* 能显示 ASR 耗时
+
+---
+
+## 阶段 4：接入大语言模型
+
+安装 Ollama，并运行：
+
+```bash
+ollama run qwen3:8b
+```
+
+服务器执行：
+
+```text
+音频
+→ ASR
+→ Qwen3
+→ 返回用户文字和机器文字
+```
+
+验收条件：
+
+* 中文输入返回中文
+* 英文输入返回英文
+* 第二轮能理解第一轮内容
+* 关闭服务器后历史清空
+
+---
+
+## 阶段 5：接入语音合成
+
+安装 Piper：
+
+```text
+机器回答文字
+→ Piper
+→ output.wav
+→ 客户端下载并播放
+```
+
+至此完成第一版完整系统。
+
+---
+
+## 阶段 6：优化
+
+完成基础版后再增加：
+
+* 流式输出
+* 边生成文字边进行语音合成
+* VAD 静音检测
+* 对话取消
+* 机器说话时按 V 打断
+* GUI 界面
+* 历史持久化
+* 用户身份与多会话
+* WebSocket
+* 多 GPU 分配
+* 更自然的 TTS
+* 回声消除
+* 噪声抑制
+
+---
+
+# 九、Python 环境建议
+
+服务器不建议直接在 Conda `base` 环境开发。
+
+创建独立环境：
+
+```bash
+conda create -n voice-server python=3.11 -y
+conda activate voice-server
+```
+
+客户端：
+
+```bash
+conda create -n voice-client python=3.11 -y
+conda activate voice-client
+```
+
+选择 Python 3.11 而不是 3.12，原因是语音和深度学习库在 Python 3.11 下通常兼容性更稳。`faster-whisper` 本身要求 Python 3.9 或以上。([GitHub][1])
+
+服务器和客户端不必共用同一个环境。
+
+---
+
+# 十、网络和安全配置
+
+服务器监听：
+
+```bash
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+检查：
+
+```bash
+ss -lntp | grep 8000
+```
+
+如果启用了 UFW：
+
+```bash
+sudo ufw allow from 10.0.0.0/8 to any port 8000 proto tcp
+```
+
+客户端测试：
+
+```bash
+curl http://10.10.10.92:8000/health
+```
+
+因为只在内网使用，第一版可以不配置 HTTPS，但不要将 `8000` 端口暴露到公网。
+
+---
+
+# 十一、可能遇到的主要问题
+
+## 1. `nvidia-smi` 显示 CUDA 13.2
+
+这只是驱动支持的最高 CUDA API 版本，不等于你的 Conda 环境已经安装了完整 CUDA 13.2 Toolkit。
+
+`faster-whisper` 当前主要需要 CUDA 12 的 cuBLAS 和 cuDNN 9。建议把相应运行库安装进独立环境，不要随意降级当前 NVIDIA 驱动。([GitHub][6])
+
+## 2. Ollama 没有使用 GPU
+
+运行：
+
+```bash
+ollama ps
+```
+
+同时观察：
+
+```bash
+watch -n 1 nvidia-smi
+```
+
+如果显存没有增长，再检查 Ollama 服务用户权限和 `CUDA_VISIBLE_DEVICES`。
+
+## 3. 按 V 没反应
+
+Linux 下全局键盘监听可能受 Wayland 限制。可以先在终端聚焦状态下监听按键；若 `pynput` 在 Wayland 下无法稳定工作，可改用：
+
+* `keyboard`
+* `evdev`
+* 切换 X11 会话
+* 用空格键或回车键临时测试
+
+## 4. 出现扬声器回录
+
+因为第一版只能在机器回答结束后再按 V，因此问题不大。以后实现随时打断时，需要加入：
+
+* 回声消除
+* 播放状态控制
+* 麦克风静音
+* AEC
+
+---
+
+# 十二、第一版不建议做的事情
+
+暂时不要做：
+
+* 不要一开始部署 70B 模型
+* 不要一开始使用双卡并行
+* 不要一开始使用 Docker
+* 不要一开始做 WebSocket 流式传输
+* 不要一开始做声音克隆
+* 不要一开始实现实时打断
+* 不要一开始做复杂 GUI
+* 不要将客户端和服务器写在同一个脚本
+* 不要在 Conda `base` 环境安装全部依赖
+
+这些内容会显著增加排错难度，但不会帮助第一版更快跑通。
+
+---
+
+# 十三、最终实施结论
+
+你的双 RTX 5090 工作站完全足够，不存在“电脑配置不够”的问题。第一版甚至只需要使用一张 RTX 5090。
+
+建议最终选型：
+
+```text
+客户端：
+Python 3.11
+pynput + sounddevice + requests
+
+服务端接口：
+FastAPI + Uvicorn
+
+语音识别：
+faster-whisper small
+跑通后升级 large-v3
+
+大语言模型：
+Ollama + Qwen3:8b
+跑通后根据效果升级 14B 或 30B
+
+语音合成：
+Piper
+中文和英文分别使用对应音色
+
+通信：
+局域网 HTTP
+10.10.10.92:8000
+
+历史：
+服务器内存中的 messages 列表
+关闭程序自动清空
+```
+
+第一步应当先完成两个独立验证：
+
+```text
+A. 本地电脑按住 V 录音并播放
+B. 工作站安装 Ollama 并成功运行 qwen3:8b
+```
+
+两者分别成功后，再开始连接客户端、FastAPI、ASR 和 TTS。
+
+[1]: https://github.com/SYSTRAN/faster-whisper?ref=agnxi.com&utm_source=chatgpt.com "GitHub - SYSTRAN/faster-whisper at agnxi.com · GitHub"
+[2]: https://ollama.com/library/qwen3?utm_source=chatgpt.com "qwen3"
+[3]: https://docs.ollama.com/gpu?utm_source=chatgpt.com "Hardware support - Ollama"
+[4]: https://github.com/rhasspy/piper/blob/master/VOICES.md?utm_source=chatgpt.com "piper/VOICES.md at master · rhasspy/piper · GitHub"
+[5]: https://github.com/hexgrad/kokoro?utm_source=chatgpt.com "GitHub - hexgrad/kokoro: https://hf.co/hexgrad/Kokoro-82M · GitHub"
+[6]: https://github.com/SYSTRAN/faster-whisper/issues/1086?utm_source=chatgpt.com "CUDA compatibility with CTranslate2 · Issue #1086 · SYSTRAN/faster-whisper"
+
+
+注意！要使用我服务器上指定的 checkpoints 文件夹
+集中存放服务端模型的权重文件和其他 .pt / .pth / .ckpt / .bin / .safetensors / .onnx 文件等等
+方便统计总大小
+避免模型散落在 ~/.cache
+方便多人共用
+便于迁移、备份和删除
+更容易控制磁盘占用
+
+可参考以下设计：
+/checkpoints/
+├── asr/
+│   └── faster-whisper-small/
+├── llm/
+│   └── qwen/
+├── tts/
+│   └── piper/
+└── temp/

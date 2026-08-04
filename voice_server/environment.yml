@@ -1,0 +1,20 @@
+name: voice_server
+channels:
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.11
+  - pip
+  - ffmpeg
+  # faster-whisper/CT2 使用 NVIDIA GPU 时需要 CUDA 12 系列 cuBLAS 和 cuDNN 9。
+  # 驱动由系统管理员安装；以下是 Conda 环境内的运行库。
+  - cuda-cudart=12
+  - libcublas=12
+  - cudnn=9
+  - pip:
+      - fastapi>=0.110,<1
+      - faster-whisper>=1.1,<2
+      - piper-tts>=1.2,<2
+      - python-multipart>=0.0.9,<1
+      - requests>=2.31,<3
+      - uvicorn[standard]>=0.27,<1

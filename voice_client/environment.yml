@@ -1,0 +1,15 @@
+name: voice_client
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  # sounddevice 需要 PortAudio；soundfile 需要 libsndfile。
+  - portaudio
+  - libsndfile
+  - pip:
+      - numpy>=1.26,<3
+      - pynput>=1.7,<2
+      - requests>=2.31,<3
+      - sounddevice>=0.4.6,<1
+      - soundfile>=0.12,<1
