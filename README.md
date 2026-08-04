@@ -429,31 +429,245 @@ test -f "$PIPER_EN_MODEL" && echo "English Piper model exists"
 
 优先使用 `wget -c` 断点续传、Hugging Face 镜像，或在网络较快的电脑下载后通过 `scp` 传到工作站。不要删除已有缓存；中断下载后可以继续执行同一个命令。
 
-## 原有 ASR 功能
+## 原有 ASR 文件识别与翻译功能
 
-远程语音助手之外，仓库仍保留原有的 Whisper ASR 和翻译功能。
+远程语音助手之外，仓库还保留一套独立的 Whisper ASR 工具链。它适合离线处理
+已有的 `mp3`、`wav`、`m4a` 等音频文件，也包含一套使用 Silero-VAD 的本地连续麦克风
+识别流程。这些脚本与 `voice_as.py` 相互独立，不会调用远程 FastAPI、Ollama 或 Piper。
 
-### 统一入口
+### 模块职责
 
-```bash
-python asr_core.py
+| 文件 | 职责 | 是否可直接运行 |
+|---|---|---|
+| `asr_core.py` | 顶层菜单；统一加载一次 Whisper，再调用文件或麦克风流程 | 是，推荐入口 |
+| `asr_mp3.py` | 文件转录、中文→英文、英文→中文的交互入口 | 是 |
+| `asr_micro.py` | Silero-VAD 连续录音和实时转录入口 | 是 |
+| `mp3/transcriber.py` | 文件音频转文字、语言检测、繁体转简体 | 否，被 `asr_mp3.py` 调用 |
+| `mp3/translator.py` | 两种文件翻译流程 | 否，被 `asr_mp3.py` 调用 |
+| `mp3/saver.py` | 文件识别/翻译结果命名和保存 | 否 |
+| `mic/recorder.py` | 设备采集、重采样、Silero-VAD 起止检测 | 否，被 `asr_micro.py` 调用 |
+| `mic/transcriber.py` | 对内存中的 16 kHz 音频调用 Whisper | 否 |
+| `mic/saver.py` | 连续麦克风结果按时间追加保存 | 否 |
+| `mic/translator.py` | 实时翻译接口预留，当前未实现 | 否 |
+
+### `asr_core.py`：统一主入口
+
+`asr_core.py` 是推荐的旧 ASR 入口。它先显示菜单，再只加载一次 Whisper 模型：
+
+```text
+asr_core.py
+├── 1. 音频文件识别/翻译 → asr_mp3.run(model, audio_path)
+└── 2. 实时麦克风识别   → asr_micro.run(whisper_model, vad_model)
 ```
 
-### 音频文件识别/翻译
+模型加载一次后传给子流程，避免在菜单切换时重复等待 10～30 秒。
+
+```bash
+# 进入项目根目录
+cd ~/ASR
+
+# 运行后选择“文件”或“麦克风”
+python asr_core.py
+
+# 也可以预先指定文件，运行后仍会选择转录或翻译功能
+python asr_core.py ./test_audio/ZH.mp3
+```
+
+### `asr_mp3.py`：文件转录和翻译
+
+独立运行时，脚本自行加载 Whisper；由 `asr_core.py` 调用时，复用统一入口已经加载的模型。
 
 ```bash
 python asr_mp3.py ./test_audio/ZH.mp3
 ```
 
-支持自动检测语言、中文简体转换以及中英翻译，结果写入 `result/`。
+启动后会出现两级菜单。
 
-### 原有本地麦克风识别
+#### 1. 语音转录
+
+处理流程：
+
+```text
+音频文件
+  → Whisper transcribe
+  → 自动检测语言
+  → 中文繁体转简体（OpenCC）
+  → result/<文件名>_transcript.txt
+```
+
+输出文件示例：
+
+```text
+result/ZH_transcript.txt
+```
+
+内容包含原始音频路径、检测语言和完整转录文本。
+
+#### 2. 语音翻译
+
+选择“语音翻译”后，可以选择以下方向：
+
+**中文 → 英文**
+
+1. 使用 Whisper 强制以中文转录原文；
+2. 使用 Whisper 原生 `task="translate"` 直接生成英文；
+3. 保存中文原文和英文译文对照。
+
+```text
+result/<文件名>_translation_zh2en.txt
+```
+
+**英文 → 中文**
+
+1. 使用 Whisper 强制以英文转录原文；
+2. 使用 `Helsinki-NLP/opus-mt-en-zh` MarianMT 模型翻译；
+3. 保存英文原文和中文译文对照。
+
+```text
+result/<文件名>_translation_en2zh.txt
+```
+
+英译中模型首次运行时从 Hugging Face 下载，之后使用本地缓存。当前单次翻译最大输入为
+512 tokens，超长文本需要后续增加分段处理。
+
+### `mp3/` 模块详解
+
+#### `mp3/transcriber.py`
+
+文件级 Whisper 配置位于文件顶部：
+
+```python
+MODEL_SIZE = "small"  # tiny / small / medium / large
+LANGUAGE = None       # zh / en / None（自动检测）
+```
+
+主要函数：
+
+- `load_model()`：加载 OpenAI Whisper 模型；
+- `transcribe(model, audio_path)`：自动检测语言并转录；
+- `transcribe_as_zh(...)`：强制中文转录，供中译英使用；
+- `transcribe_as_en(...)`：强制英文转录，供英译中使用。
+
+当前使用 `fp16=False`，适合 CPU 环境；音频格式解析依赖系统 `ffmpeg`。
+
+#### `mp3/translator.py`
+
+```python
+EN2ZH_MODEL = "Helsinki-NLP/opus-mt-en-zh"
+```
+
+中译英不需要额外翻译模型，直接使用 Whisper 的翻译任务；英译中才会懒加载 MarianMT，
+避免不使用英译中功能时占用额外内存。
+
+#### `mp3/saver.py`
+
+统一管理输出目录和文件名：
+
+```python
+OUTPUT_DIR = "./result"
+```
+
+文件名规则如下：
+
+| 功能 | 输出文件 |
+|---|---|
+| 文件转录 | `<原文件名>_transcript.txt` |
+| 中文→英文 | `<原文件名>_translation_zh2en.txt` |
+| 英文→中文 | `<原文件名>_translation_en2zh.txt` |
+
+### `asr_micro.py`：原有实时麦克风识别
+
+该模式与 `voice_as.py client` 不同：它不是按住 `V` 录音，而是持续监听麦克风，
+由 Silero-VAD 自动判断说话开始和结束。
 
 ```bash
 python asr_micro.py
 ```
 
-该模式使用原有的 Silero-VAD 流程，与 `voice_as.py client` 的按键录音模式相互独立。
+启动后选择“实时语音转录”。处理流程：
+
+```text
+麦克风原生采样率
+  → 重采样至 16 kHz
+  → Silero-VAD 检测人声
+  → 静音超过 1.5 秒结束一段录音
+  → Whisper 自动识别中英文
+  → 终端输出并追加保存
+```
+
+默认输出：
+
+```text
+result/micro_transcript.txt
+```
+
+每段结果追加为：
+
+```text
+[14:23:01][zh] 今天天气很好。
+[14:23:08][en] Hello, how are you?
+```
+
+### `mic/` 模块详解
+
+#### `mic/recorder.py`
+
+这是原有麦克风链路的核心。它使用设备原生采样率采集，再通过 `scipy.signal.resample_poly`
+重采样到 Whisper/Silero-VAD 所需的 16 kHz。
+
+首次使用前检查设备：
+
+```bash
+python -c "import sounddevice as sd; print(sd.query_devices())"
+```
+
+找到输入通道数大于 0 的设备后，在 `mic/recorder.py` 的配置区修改：
+
+```python
+DEVICE_INDEX       = 10      # 修改为实际输入设备编号
+DEVICE_SAMPLE_RATE = 44100   # 修改为该设备 default_samplerate
+```
+
+常用参数：
+
+| 参数 | 默认值 | 作用 |
+|---|---:|---|
+| `TARGET_SAMPLE_RATE` | `16000` | Whisper/Silero-VAD 输入采样率，固定目标值 |
+| `FRAME_DURATION` | `0.032` | 32 ms 帧长，Silero-VAD 最小要求 |
+| `SILENCE_TIMEOUT` | `1.5` | 静音超过此时间结束当前语音段 |
+| `VAD_THRESHOLD` | `0.3` | 人声置信度阈值，越高越严格 |
+| `CHANNELS` | `1` | 单声道录音 |
+
+#### `mic/transcriber.py`
+
+接收 `mic/recorder.py` 返回的 16 kHz `numpy.float32` 数组，调用 Whisper 自动检测语言，
+再将中文繁体转换为简体。它不写临时音频文件，也不支持实时逐字输出。
+
+#### `mic/saver.py`
+
+以追加模式写入 `result/micro_transcript.txt`，每一段附带时间戳和语言代码，适合连续记录一整次运行内容。
+
+#### `mic/translator.py`
+
+当前只是接口预留，`translate_zh_to_en()` 和 `translate_en_to_zh()` 会抛出
+`NotImplementedError`。实时麦克风翻译尚未实现；文件翻译请使用 `asr_mp3.py`。
+
+### 原有 ASR 的依赖
+
+```bash
+pip install openai-whisper opencc-python-reimplemented
+pip install transformers sentencepiece sacremoses
+pip install sounddevice scipy torch torchaudio
+```
+
+Ubuntu/Debian 系统依赖：
+
+```bash
+sudo apt install ffmpeg portaudio19-dev
+```
+
+原有 ASR 与远程语音助手使用不同的模型栈：原有功能使用 `openai-whisper`，远程服务端使用
+`faster-whisper`；不要将两套环境的依赖混为一套，客户端也不需要安装原有 ASR 的 GPU 依赖。
 
 ## 开发与验证记录
 
