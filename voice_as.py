@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -234,11 +235,18 @@ def build_server_app(config: ServerConfig) -> Any:
 
 
 class VoiceClient:
-    def __init__(self, server: str, session_id: str, sample_rate: int, min_seconds: float, max_seconds: float) -> None:
+    def __init__(self, server: str, session_id: str, sample_rate: int, min_seconds: float,
+                 max_seconds: float, output_device: int | str | None = None,
+                 player: str = "sounddevice", alsa_device: str | None = None,
+                 pw_target: str | None = None) -> None:
         self.server = server.rstrip("/")
         self.session_id = session_id
         self.sample_rate = sample_rate
         self.min_seconds, self.max_seconds = min_seconds, max_seconds
+        self.output_device = output_device
+        self.player = player
+        self.alsa_device = alsa_device
+        self.pw_target = pw_target
         self.recording = False
         self.busy = False
         self.frames: list[Any] = []
@@ -341,7 +349,9 @@ class VoiceClient:
                     data, rate = sf.read(response_path, dtype="float32")
                     # Piper voices commonly output 22.05 kHz, while ALSA/HDMI
                     # playback devices often accept only 44.1/48 kHz.
-                    output_device = sd.query_devices(kind="output")
+                    output_device = (sd.query_devices(self.output_device)
+                                     if self.output_device is not None
+                                     else sd.query_devices(kind="output"))
                     output_rate = int(round(float(output_device["default_samplerate"])))
                     if output_rate != rate:
                         source_length = len(data)
@@ -358,8 +368,24 @@ class VoiceClient:
                         print(f"[提示] 播放设备不支持 {rate} Hz，重采样到 {output_rate} Hz", flush=True)
                         rate = output_rate
                     print("[正在播放...]", flush=True)
-                    sd.play(data, rate)
-                    sd.wait()
+                    if self.player in ("aplay", "pw-play"):
+                        if self.player == "pw-play":
+                            command = ["pw-play"]
+                            if self.pw_target:
+                                command.extend(["--target", self.pw_target])
+                        else:
+                            command = ["aplay", "-q"]
+                            if self.alsa_device:
+                                command.extend(["-D", self.alsa_device])
+                        command.append(str(response_path))
+                        subprocess.run(command, check=True, timeout=120)
+                    elif self.output_device is None:
+                        sd.play(data, rate)
+                    else:
+                        sd.play(data, rate, device=self.output_device)
+                    if self.player not in ("aplay", "pw-play"):
+                        sd.wait()
+                    print("[播放完成]", flush=True)
                 finally:
                     response_path.unlink(missing_ok=True)
             finally:
@@ -379,8 +405,12 @@ def run_client(args: argparse.Namespace) -> None:
         import soundfile  # noqa: F401
     except ImportError as exc:
         raise RuntimeError("Client dependencies missing. Install: pynput sounddevice soundfile numpy requests") from exc
+    output_device: int | str | None = args.output_device
+    if isinstance(output_device, str) and output_device.isdigit():
+        output_device = int(output_device)
     client = VoiceClient(args.server, args.session_id or uuid.uuid4().hex, args.sample_rate,
-                         args.min_seconds, args.max_seconds)
+                         args.min_seconds, args.max_seconds, output_device,
+                         args.player, args.alsa_device, args.pw_target)
     print("Voice Assistant Client")
     print(f"Server: {args.server}")
     print("按住 V 开始说话，松开 V 发送；按 ESC 退出")
@@ -424,6 +454,14 @@ def parse_args() -> argparse.Namespace:
     client.add_argument("--sample-rate", type=int, default=16000)
     client.add_argument("--min-seconds", type=float, default=0.3)
     client.add_argument("--max-seconds", type=float, default=30.0)
+    client.add_argument("--output-device", default=None,
+                        help="播放设备编号或名称；不指定则使用系统默认输出设备")
+    client.add_argument("--player", choices=("sounddevice", "aplay", "pw-play"), default="sounddevice",
+                        help="播放后端；PipeWire 系统建议使用 pw-play")
+    client.add_argument("--alsa-device", default=None,
+                        help="aplay 设备，例如 hw:1,0；仅 --player aplay 生效")
+    client.add_argument("--pw-target", default=None,
+                        help="PipeWire 输出节点 ID，例如 39；仅 --player pw-play 生效")
     return parser.parse_args()
 
 

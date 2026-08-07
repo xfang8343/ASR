@@ -281,7 +281,9 @@ cd ~/ASR
 conda activate voice_client
 
 python voice_as.py client \
-  --server http://127.0.0.1:8001
+  --server http://127.0.0.1:8001 \
+  --player pw-play \
+  --pw-target 39
 ```
 
 交互方式：
@@ -428,6 +430,104 @@ test -f "$PIPER_EN_MODEL" && echo "English Piper model exists"
 ### 10. 模型文件下载很慢
 
 优先使用 `wget -c` 断点续传、Hugging Face 镜像，或在网络较快的电脑下载后通过 `scp` 传到工作站。不要删除已有缓存；中断下载后可以继续执行同一个命令。
+
+### 11. 显示 `[正在播放...]` 但耳机没有声音
+
+这通常不是服务端 TTS 失败。若日志已经显示：
+
+```text
+[正在播放...]
+```
+
+但没有听到声音，先在本地查看 ALSA 播放设备：
+
+```bash
+aplay -l
+```
+
+本项目测试机器的耳机设备是：
+
+```text
+card 1: Generic [HD-Audio Generic]
+device 0: ALC287 Analog
+```
+
+同时，`sounddevice` 可能把默认输出选为 NVIDIA HDMI，导致声音被发送到没有接音箱的显示器。PipeWire 系统应先查看节点：
+
+```bash
+wpctl status
+```
+
+确认默认输出并解除静音：
+
+```bash
+wpctl set-mute 39 0
+wpctl set-volume 39 0.8
+wpctl get-volume 39
+```
+
+其中 `39` 是示例输出节点 ID；每台机器的 ID 可能不同，应以 `wpctl status` 为准。
+
+### 12. `speaker-test -D plughw:1,0` 报设备忙
+
+如果出现：
+
+```text
+重播打开错误: -16, 设备或资源忙
+```
+
+说明 ALSA 硬件设备已经被 PipeWire 占用。不要强行使用 `hw:1,0`，改用 PipeWire 播放后端：
+
+```bash
+pw-play --target 39 /tmp/test_sine.wav
+```
+
+如果该命令能听到声音，客户端应使用：
+
+```bash
+python voice_as.py client \
+  --server http://127.0.0.1:8001 \
+  --player pw-play \
+  --pw-target 39
+```
+
+`voice_as.py` 支持三种播放后端：
+
+| 参数 | 适用场景 |
+|---|---|
+| `--player sounddevice` | 默认 PortAudio 输出，适用于设备被正确暴露给 PortAudio 的环境 |
+| `--player aplay --alsa-device plughw:1,0` | 没有 PipeWire 占用、可直接访问 ALSA 设备时 |
+| `--player pw-play --pw-target 39` | Ubuntu/PipeWire 环境，推荐用于耳机和桌面音频 |
+
+### 13. `pw-play` 默认播放设备不正确
+
+如果直接运行 `pw-play /tmp/test_sine.wav` 没有声音，但指定目标后有声音：
+
+```bash
+wpctl status
+pw-play --target <实际耳机节点ID> /tmp/test_sine.wav
+```
+
+将 `<实际耳机节点ID>` 替换为 `wpctl status` 中 `Sinks` 下的模拟立体声或耳机节点。不要选择 NVIDIA HDMI 节点。
+
+也可以先检查 PipeWire 的默认输出：
+
+```bash
+wpctl get-volume @DEFAULT_AUDIO_SINK@
+```
+
+如果输出带有 `[MUTED]`，使用 `wpctl set-mute <节点ID> 0` 解除静音。
+
+### 14. 播放成功但没有“播放结束”提示
+
+客户端原先只输出 `[正在播放...]`，播放结束后继续等待下一次 `V`，容易被误认为程序卡住。当前版本在播放器完成后会输出：
+
+```text
+[正在播放...]
+[播放完成]
+```
+
+随后客户端仍会保持运行，等待下一次按住 `V`；按 `ESC` 才会退出。
 
 ## 原有 ASR 文件识别与翻译功能
 
